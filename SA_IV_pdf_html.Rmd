@@ -1,0 +1,407 @@
+---
+output:
+  html_document: default
+  pdf_document: default
+  word_document: default
+---
+
+% !TEX encoding = UTF-8 Unicode
+
+---
+title: "Mini-Projeto 04 - Sentiment Analisys IV"
+date: "*14 de fevereiro, 2020*"
+author: "*Franklin Ferreira*"
+
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Mini-Projeto 04 - Sentiment Analisys (Análise de sentimentos) IV
+
+O objetivo desta análise é explorar diferentes técnicas e ferramentas para a captura, manipulação e transformação de dados provenientes do Twitter. Buscaremos classificar os sentimentos que cada Tweet transmite e determinar sua polaridade.
+
+Esta técnica visa auxilar os tomadores de decisão na compreensão dos sentimentos do seu público alvo em relação a um determinado tema. Como por exemplo, determinar se uma campanha de marketing gerou surpresa, raiva, medo, nojo, alegria, etc. 
+
+O projeto completo, bem como todos os arquivos auxiliares utilizados para sua criação podem ser encontrados no link do github ao final desta análise.
+
+# Importando bibliotecas necessárias
+
+```{r librarys, message = FALSE, warning = FALSE}
+
+# Importando bibliotecas necessárias para o uso do rmarkdown.
+
+# install.packages("knitr")
+# install.packages("rmarkdown")
+
+library(knitr)
+library(rmarkdown)
+
+## Pacotes para se conectar com o Twitter.
+
+# install.packages("twitteR")
+# install.packages("httr")
+
+library(rtweet)
+library(httr)
+
+## Pacotes para Data Munging.
+
+# install.packages("plyr")
+# install.packages("dplyr")
+
+library(plyr)
+library(dplyr)
+
+## Pacotes para a criação de gráficos.
+
+# install.packages("ggplot2")
+
+library(ggplot2)
+
+```
+
+# Funções auxiliares
+
+Antes de iniciar a análise, vamos definir algumas funções auxiliares para automatizar as tarefas de Data Munging e o cálculo da polaridade do sentimento de um Tweet.
+
+```{r utils}
+####
+## Definindo funções auxiliares.
+####
+
+# Função que computa a polaridade de uma sentença (contabiliza o número de palavras 
+# positivas e negativas).
+
+feelingsScore <- function(sentences, posWords, negWords) {
+  
+  # Criando um array de scores com lapply.
+  
+  scores = lapply(sentences,
+                  function(sentence, posWords, negWords) {
+                    
+                    # Separa palavras presentes na sentença.
+                    
+                    wordList = str_split(sentence, "\\s+")
+                    
+                    # Converte a lista de palavras em um vetor.
+                    
+                    words = unlist(wordList)
+                    
+                    # Identifica o número de palavras positivas e negativas que foram  
+                    # encontradas na sentença. O valor NA é retornado caso a palavra não
+                    # esteja presente dentro de uma das listas.
+                    
+                    posMatches = match(words, posWords)
+                    negMatches = match(words, negWords)
+                    
+                    posMatches = !is.na(posMatches)
+                    negMatches = !is.na(negMatches)
+                    
+                    # Contabiliza o score total da sentença.
+                    
+                    score = sum(posMatches) - sum(negMatches)
+                    
+                    return(score)
+                    
+                  }, posWords, negWords)
+  
+  data.frame(text = sentences, score = unlist(scores))
+}
+
+# Função que realiza uma limpeza nos textos capturados de tweets.
+
+cleanData <- function(tweet) {
+  
+  # Remove links http.
+  
+  tweet = gsub("(f|ht)(tp)(s?)(://)(.*)[.|/](.*)", " ", tweet)
+  tweet = gsub("http\\w+", "", tweet)
+  
+  # Remove retweets.
+  
+  tweet = gsub("(RT|via)((?:\\b\\W*@\\w+)+)", " ", tweet)
+  
+  # Remove “#Hashtag”.
+  
+  tweet = gsub("#\\w+", " ", tweet)
+  
+  # Remove nomes de usuários “@people”.
+  
+  tweet = gsub("@\\w+", " ", tweet)
+  
+  # Remove pontuação.
+  
+  tweet = gsub("[[:punct:]]", " ", tweet)
+  
+  # Remove números.
+  
+  tweet = gsub("[[:digit:]]", " ", tweet)
+  
+  # Remove espaços desnecessários.
+  
+  tweet = gsub("[ \t]{2,}", " ", tweet)
+  
+  tweet = gsub("^\\s+|\\s+$", "", tweet)
+  
+  # Convertendo encoding de caracteres e letras maíusculas em minúsculas.
+  
+  tweet = stringi::stri_trans_general(tweet, "latin-ascii")
+  
+  tweet = tryTolower(tweet)
+  
+  tweet = tweet[!is.na(tweet)]
+}
+
+# Converte caracateres maiúsculos para minúsculos.
+
+tryTolower = function(x) {
+  
+  # Cria um dado missing (NA).
+  
+  y = NA
+  
+  # Executa um tramento de erro caso ocorra.
+  
+  try_error = tryCatch(tolower(x), error = function(e) e)
+  
+  # Se não houver erro, converte os caracteres.
+  
+  if (!inherits(try_error, "error"))
+    y = tolower(x)
+  
+  return(y)
+}
+
+```
+
+# Executando a autenticação para se conectar com o Twitter
+
+Utiliza-se o pacote *rtweet* para estabelecer uma conexão com o Twitter. Note que ao efetuar o acesso, é necessário que se tenha uma conta nesta rede social e que possua as chaves de autenticação solicitadas para o estabelicimento da conexão. Caso não tenha as chaves, poderá obtê-las aqui: https://apps.twitter.com/.
+
+```{r connection}
+
+# Definindo as chaves de autenticação no Twitter. 
+
+key         <- "Insert your key here!"
+secret      <- "Insert your secret here!"
+token       <- "Insert your token here!"
+tokenSecret <- "Insert your token secret here!"
+
+# Realizando o processo de autenticação para iniciar uma sesssão com o rtweet. 
+
+token <- create_token (
+  consumer_key    = key,
+  consumer_secret = secret,
+  access_token    = token,
+  access_secret   = tokenSecret
+)
+
+```
+
+# Explorando as funções de captura de Tweets do pacote rtweet.
+
+O pacote *rtweet* permite a busca por tweets dentro de uma timeline específica.
+
+```{r timeLine, cache=TRUE, results='asis', eval=FALSE}
+# Definindo o nome da timeline a ser analisada.
+
+timeLine <- "dsacademybr"
+
+# Definindo o número de tweets a serem capturados.
+
+n <- 100
+
+# Capturando Tweets.
+
+tlTweets <- get_timelines(timeLine, n = n)
+
+# Exibindo os primeiros tweets capturados.
+
+tlTweets[1:5]
+```
+
+Também oferece funções para a captura do stream de tweets por determinado período de tempo.
+
+```{r randomSearch, cache=TRUE, results='asis', eval=FALSE}
+
+# Definindo a key word a ser utilizada para filtrar os Tweets que devem ser capturados.
+
+keyWord <- ''
+
+# Capturando por um período de tempo (o padrão é 30 segundos), tweets aleatórios.
+
+randomTweets <- stream_tweets(keyWord)
+
+# Exibindo os primeiros tweets capturados.
+
+randomTweets[1:5]
+```
+
+```{r streamSearch, cache=TRUE, results='asis', eval=FALSE}
+# Definindo a key word a ser utilizada para filtrar os Tweets que devem ser capturados.
+
+keyWord <- 'dataScience'
+
+# Capturando por um período de tempo (o padrão é 30 segundos), tweets que contenham a keyWord especificada.
+
+kwTweets <- stream_tweets(keyWord)
+
+# Exibindo os primeiros tweets capturados.
+
+kwTweets[1:5]
+```
+
+Outra maneira de se obter os dados é a partir da captura das tendências dos Tweets de uma determinada região.
+
+```{r trends, cache=TRUE, results='asis', eval=FALSE}
+
+# Defindo a região da qual as tendências serão capturadas.
+
+place <- "Brazil"
+
+# Capturando as têndencias em um determinada região.
+
+trendsTweets <- get_trends(place)
+
+# Exibindo os primeiros tweets capturados.
+
+trendsTweets{1:5}
+```
+
+Caso o número de Tweets necessários exceda o limite de 18.000, podemos configurar o comando *retryonratelimit* como TRUE para que o processo de captura aguarde o limite de mensagens por período de tempo se renovar e os dados voltem a ser obtidos até que a quantidade solicitada seja alcançada.
+
+```{r searchLargeTweets, cache=TRUE, results='asis', eval=FALSE}
+
+# Definindo a key word a ser utilizada para filtrar os Tweets que devem ser capturados.
+
+keyWord <- 'DataScience'
+
+# Definindo o número de tweets a serem capturados.
+
+n <- 20000
+
+# Capturando 20.000 de tweets que contenham a key word especificada.
+
+dsTweets <- search_tweets(keyWord, n = n, retryonratelimit = TRUE)
+
+# Exibindo os primeiros tweets capturados.
+
+dsTweets[1:5]
+```
+
+# Série temporal sobre a frequência de uso de uma palavra-chave
+
+O objetivo nesta etapa é avaliar o comportamento do uso de uma palavra-chave ao longo do tempo.
+
+```{r searchTweets, cache=TRUE, results='asis'}
+
+# Definindo a key word a ser utilizada para filtrar os Tweets que devem ser capturados.
+
+keyWord <- "Machine Learning"
+  
+# Definindo o número de tweets a serem capturados.
+
+n <- 10000
+
+# Capturando no fluxo de tweets mensagens que contenham a palavra chave especificada.
+
+mlTweets <- search_tweets(keyWord, n = n , include_rts = FALSE)
+
+# Exibindo os primeiros tweets capturados.
+
+mlTweets[1:5]
+```
+
+```{r TSPlot}
+
+# Definindo o intervalo de tempo com o qual os dados na série temporal devem ser exibidos.
+
+time <- "6 hours"
+
+# Plotando o gráfico da série temporal.
+
+ts_plot(mlTweets, time) +
+  theme_bw() +
+  theme(plot.title = element_text(face = "bold")) +
+  xlab(NULL) +
+  ylab(NULL) +
+  labs (
+    title    = paste('Frequency of use of the keyword:', keyWord),
+    subtitle = paste("Count of aggregated tweets at", time, "intervals"),
+    caption  = "\nSource: Data collected from Twitter with the rtweet package"
+  )
+```
+
+# Série temporal sobre a frequência de uso de uma palavra-chave em diferentes regiões
+
+O objetivo nesta etapa é avaliar o comportamento do uso de uma palavra-chave ao longo do tempo em diferentes regiões.
+
+```{r multipleSearchs, cache=TRUE, results='asis'}
+##
+### Capturando tweets que contenham a keyword especificada durante os últimos.
+##
+
+# Definindo a keyWord.
+
+keyWord <- "BigData"
+
+# Definindo o número máximo de tweets que podem ser capturados.
+
+n <- 5000
+
+# Capturando tweets em diferentes regiões.
+
+mlTweetsInRJ <- search_tweets(keyWord, geocode = lookup_coords("rio de janeiro"), n = n, include_rts = FALSE)
+mlTweetsInSP <- search_tweets(keyWord, geocode = lookup_coords("são paulo"), n = n, include_rts = FALSE)
+mlTweetsInLD <- search_tweets(keyWord, geocode = lookup_coords("london"), n = n, include_rts = FALSE)
+mlTweetsInPA <- search_tweets(keyWord, geocode = lookup_coords("paris"), n = n, include_rts = FALSE)
+
+```
+
+Vamos organizar todos os tweets capturados em um único dataset para efetuar a plotagem do gráfico.
+
+```{r dataMunging}
+# Criando um dataset com todos os tweets capturados.
+
+dataTweets <- rbind(mlTweetsInRJ, mlTweetsInSP, mlTweetsInLD, mlTweetsInPA)
+
+# Contabilizando o número de tweets capturados para cada estado.
+
+nTweets <- c(nrow(mlTweetsInRJ), nrow(mlTweetsInSP), nrow(mlTweetsInLD), nrow(mlTweetsInPA))
+
+# Atribuindo o nome do estado a qual cada tweet pertence dentro do dataset criado.
+
+dataTweets$place_name <- rep(c("Rio de Janeiro", "São Paulo", "London", 'Paris'), nTweets)
+
+```
+
+```{r TSPlot2}
+
+# Definindo o intervalo de tempo com o qual os dados na série temporal devem ser exibidos.
+
+time <- "4 hours"
+
+# Plotando gráfico de série temporal para exibir a frequência com que a keyWord foi buscada em cada estado
+# pesquisado.
+
+ts_plot(group_by(dataTweets, place_name), time) +
+  theme_bw() +
+  theme(plot.title = element_text(face = "bold")) +
+  xlab(NULL) +
+  ylab(NULL) +
+  labs (
+    title    = paste('Frequency of use of the keyword:', keyWord),
+    color    = 'Place',
+    subtitle = paste("Count of aggregated tweets at", time, "intervals"),
+    caption  = "\nSource: Data collected from Twitter with the rtweet package"
+  )
+```
+
+# Contato
+
+* **E-mail:** franklinfs390@gmail.com
+* **Linkedin:** https://www.linkedin.com/in/franklinfs390/ 
+* **Github:** https://github.com/franklin390
